@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import Optional
-from elasticsearch import Elasticsearch
+#from elasticsearch import Elasticsearch
 import os
 
 app = FastAPI()
