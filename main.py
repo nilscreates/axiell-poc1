@@ -1,43 +1,35 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
-#from elasticsearch import Elasticsearch
 import os
+import requests
 
 app = FastAPI()
 
-# Read environment variables
-ELASTIC_URL = os.getenv("ELASTIC_URL")
+# Read credentials from Railway environment
+ELASTIC_URL      = os.getenv("ELASTIC_URL")
 ELASTIC_USERNAME = os.getenv("ELASTIC_USERNAME")
 ELASTIC_PASSWORD = os.getenv("ELASTIC_PASSWORD")
-ELASTIC_INDEX = os.getenv("ELASTIC_INDEX")
-
-# Initialize Elasticsearch client
-es = Elasticsearch(
-    ELASTIC_URL,
-    basic_auth=(ELASTIC_USERNAME, ELASTIC_PASSWORD),
-    verify_certs=False
-)
+ELASTIC_INDEX    = os.getenv("ELASTIC_INDEX")
 
 class SearchRequest(BaseModel):
     semantic_query: str
-    keywords: Optional[str] = None
+    keywords: Optional[str]      = None
     format_filter: Optional[str] = None
 
 @app.post("/search_catalogue")
 def search_catalogue(request: SearchRequest):
     must_clauses = []
 
-    # Semantic query (ELSER)
-    if request.semantic_query:
-        must_clauses.append({
-            "semantic": {
-                "field": "merged_descriptives",
-                "query": request.semantic_query
-            }
-        })
+    # Semantic (ELSER) clause
+    must_clauses.append({
+        "semantic": {
+            "field": "merged_descriptives",
+            "query": request.semantic_query
+        }
+    })
 
-    # Keyword match block
+    # Lexical keyword match
     if request.keywords:
         must_clauses.append({
             "multi_match": {
@@ -55,7 +47,7 @@ def search_catalogue(request: SearchRequest):
             }
         })
 
-    # Filter block (format)
+    # Optional format filter
     filters = []
     if request.format_filter:
         filters.append({
@@ -64,18 +56,31 @@ def search_catalogue(request: SearchRequest):
             }
         })
 
-    # Final query
-    query_body = {
+    body = {
         "query": {
             "bool": {
-                "must": must_clauses,
+                "must":   must_clauses,
                 "filter": filters
             }
         }
     }
 
-    response = es.search(index=ELASTIC_INDEX, body=query_body)
-    hits = response.get("hits", {}).get("hits", [])
-    results = [hit["_source"] for hit in hits]
+    # Call Elasticsearch via HTTP
+    resp = requests.post(
+        f"{ELASTIC_URL}/{ELASTIC_INDEX}/_search",
+        auth=(ELASTIC_USERNAME, ELASTIC_PASSWORD),
+        json=body,
+        verify=False
+    )
+    resp.raise_for_status()
+
+    hits = resp.json().get("hits", {}).get("hits", [])
+    results = [
+        {
+            "title": hit["_source"].get("title") or hit["_source"].get("expression_title"),
+            "summary": hit["_source"].get("description") or ""
+        }
+        for hit in hits
+    ]
 
     return {"results": results}
