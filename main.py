@@ -141,6 +141,10 @@ def diag():
         info["reason"] = str(e)[:300]
     return info
 
+@app.get("/")
+def root():
+    return {"ok": True, "service": "Author Enrichment Service"}
+
 @app.post("/enrich/author")
 async def enrich_author(
     name: str = Query(..., description="Exact display name from works"),
