@@ -11,10 +11,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 app = FastAPI(title="Author Enrichment Service")
 
 # ==== Config (Railway envs) ===================================================
-ELASTIC_URL        = os.environ.get("ELASTIC_URL") or os.environ.get("ES_URL") or "http://localhost:9200"
-ELASTIC_USER       = os.environ.get("ELASTIC_USERNAME") or os.environ.get("ES_USER")
-ELASTIC_PASS       = os.environ.get("ELASTIC_PASSWORD") or os.environ.get("ES_PASS")
-ELASTIC_API_KEY    = os.environ.get("ELASTIC_API_KEY")  # optional
+ELASTIC_URL        = os.environ.get("ELASTIC_URL") or "http://localhost:9200"
+ELASTIC_API_KEY    = os.environ.get("ELASTIC_API_KEY")  # REQUIRED for this setup
 ELASTIC_VERIFY     = os.environ.get("ELASTIC_VERIFY_CERTS", "true").lower() != "false"
 
 # Index/pipeline names
@@ -22,16 +20,16 @@ ES_WORKS_INDEX     = os.environ.get("ELASTIC_INDEX", "quria-fields-subset-full00
 ES_AUTHORS_INDEX   = os.environ.get("ES_AUTHORS_INDEX", "authors")
 ES_ELSER_PIPELINE  = os.environ.get("ES_ELSER_PIPELINE", "author_profile_elser")
 
-# Rate limit for OpenLibrary (ms)
-OL_DELAY_MS        = int(os.environ.get("OPENLIBRARY_DELAY_MS", "200"))
+# OpenLibrary polite delay (seconds) between requests
+OL_DELAY           = float(os.environ.get("OL_DELAY", "0.5"))
 
-# ==== Elasticsearch client ====================================================
-if ELASTIC_API_KEY:
-    es = Elasticsearch(ELASTIC_URL, api_key=ELASTIC_API_KEY, request_timeout=60, verify_certs=ELASTIC_VERIFY)
-elif ELASTIC_USER and ELASTIC_PASS:
-    es = Elasticsearch(ELASTIC_URL, basic_auth=(ELASTIC_USER, ELASTIC_PASS), request_timeout=60, verify_certs=ELASTIC_VERIFY)
-else:
-    es = Elasticsearch(ELASTIC_URL, request_timeout=60, verify_certs=ELASTIC_VERIFY)
+# ==== Elasticsearch client (API key only) =====================================
+es = Elasticsearch(
+    ELASTIC_URL,
+    api_key=ELASTIC_API_KEY,
+    request_timeout=60,
+    verify_certs=ELASTIC_VERIFY,
+)
 
 # ==== Utils ===================================================================
 def to_year(s: Optional[str]) -> Optional[int]:
@@ -111,7 +109,8 @@ async def enrich_one(name: str, birth_year: Optional[int]) -> Dict[str, Any]:
             }
         }
         index_author_doc(olid, doc)
-        await asyncio.sleep(OL_DELAY_MS / 1000.0)
+        # polite delay to avoid rate limiting
+        await asyncio.sleep(OL_DELAY)
         return {"status": "ok", "olid": olid, "name": doc["name"], "subjects": subjects[:8]}
 
 # ==== HTTP endpoints ==========================================================
@@ -124,16 +123,15 @@ def health():
 
 @app.get("/diag")
 def diag():
-    # TEMPORARY: remove once live
+    # TEMPORARY: remove when stable
     info = {
         "url_set": bool(ELASTIC_URL),
-        "has_user": bool(ELASTIC_USER),
-        "has_pass": bool(ELASTIC_PASS),
         "has_api_key": bool(ELASTIC_API_KEY),
         "verify_certs": ELASTIC_VERIFY,
         "works_index": ES_WORKS_INDEX,
         "authors_index": ES_AUTHORS_INDEX,
-        "pipeline": ES_ELSER_PIPELINE
+        "pipeline": ES_ELSER_PIPELINE,
+        "ol_delay": OL_DELAY,
     }
     try:
         es.info()
@@ -196,7 +194,6 @@ async def enrich_batch(
             try:
                 await enrich_one(name, birth_year)
             except Exception as e:
-                # log-like return (no logger to keep file minimal)
                 print(f"[enrich_batch] error for '{name}': {e}")
             processed += 1
 
@@ -206,6 +203,6 @@ async def enrich_batch(
 
     return {"processed": processed, "next_after_key": after_key}
 
-# ==== Entrypoint hint (Railway uses $PORT) ====================================
+# ==== Entrypoint (Railway uses $PORT) =========================================
 # Start command for Railway:
 # uvicorn main:app --host 0.0.0.0 --port $PORT
