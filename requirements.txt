@@ -1,4 +1,6 @@
 fastapi
-requests
 uvicorn
-pydantic
+httpx
+elasticsearch==8.13.0
+tenacity
+python-dotenv
