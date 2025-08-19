@@ -64,8 +64,19 @@ def extract_bio(detail: Dict[str, Any]) -> Optional[str]:
         return v["value"]
     return None
 
-def index_author_doc(olid: str, payload: Dict[str, Any]) -> None:
-    es.index(index=ES_AUTHORS_INDEX, id=olid, document=payload, pipeline=ES_ELSER_PIPELINE, refresh="false")
+def index_author_doc(olid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    # Skip if already indexed
+    if es.exists(index=ES_AUTHORS_INDEX, id=olid):
+        return {"skipped": True, "author_id": olid}
+
+    es.index(
+        index=ES_AUTHORS_INDEX,
+        id=olid,
+        document=payload,
+        pipeline=ES_ELSER_PIPELINE,
+        refresh="false",
+    )
+    return {"indexed": True, "author_id": olid}
 
 # ==== OpenLibrary (async) =====================================================
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=4))
