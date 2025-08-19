@@ -1,0 +1,611 @@
+///// MISC ///////
+DELETE quria-fields-subset-full002
+
+//optional - viewing embedding field to make sure they are generated
+
+GET quria-fields-subset-full004/_mapping
+
+GET quria-fields-subset-full004/_search
+{
+  "fields": [
+    "_inference_fields"
+  ]
+}
+
+// check on task status
+GET _tasks/O0Kn6Q3CR1-TZ-AUXe7gZg:22214203
+
+
+//Generate OpenAI inference endpoint (only run once)
+PUT _inference/text_embedding/openai-embeddings
+{
+    "service": "openai",
+    "service_settings": {
+        "api_key": "OpenAI-API-Key",
+        "model_id": "text-embedding-3-small",
+        "dimensions": 128
+    }
+}
+//Generate ELSER inference endpoint (only run once)
+PUT _inference/sparse_embedding/elser-test-embedding
+{
+  "service": "elasticsearch",
+  "service_settings": {
+    "num_allocations": 1,
+    "num_threads": 1,
+    "model_id": ".elser_model_2_linux-x86_64"
+  }
+}
+
+
+
+
+//concatenate decriptive fields upon ingest to prepare for them for embeddings (only run once to set up pipeline) 
+
+PUT _ingest/pipeline/merge_descriptive_fields
+{
+  "description": "Merge all descriptive fields into one",
+  "processors": [
+    {
+      "script": {
+        "lang": "painless",
+        "source": """
+          def parts = [];
+
+          if (ctx.title != null && !ctx.title.isEmpty()) {
+            parts.add(ctx.title);
+          }
+
+          if (ctx.expression_title != null && !ctx.expression_title.isEmpty()) {
+            parts.add(ctx.expression_title);
+          }
+
+          if (ctx.variant_titles != null && ctx.variant_titles instanceof List && !ctx.variant_titles.isEmpty()) {
+            parts.add(String.join(" ", ctx.variant_titles));
+          }
+
+          if (ctx.other_titles != null && ctx.other_titles instanceof List && !ctx.other_titles.isEmpty()) {
+            parts.add(String.join(" ", ctx.other_titles));
+          }
+
+          if (ctx.statement_of_responsibility != null && !ctx.statement_of_responsibility.isEmpty()) {
+            parts.add(ctx.statement_of_responsibility);
+          }
+
+          if (ctx.description != null && !ctx.description.isEmpty()) {
+            parts.add(ctx.description);
+          }
+
+          if (ctx.manifestation_type != null && !ctx.manifestation_type.isEmpty()) {
+            parts.add(ctx.manifestation_type);
+          }
+
+          if (ctx.genres != null && ctx.genres instanceof List && !ctx.genres.isEmpty()) {
+            parts.add(String.join(" ", ctx.genres));
+          }
+
+          if (ctx.subjects != null && ctx.subjects instanceof List && !ctx.subjects.isEmpty()) {
+            parts.add(String.join(" ", ctx.subjects));
+          }
+
+          ctx.merged_descriptives = String.join(" ", parts);
+        """
+      }
+    }
+  ]
+}
+
+
+
+
+//Generate index template which executes pipeline and mapping for semantic embedding
+PUT _index_template/metadata-standard-work
+{
+  "index_patterns": ["quria-fields-subset-*"],
+  "template": {
+    "settings": {
+      "index.default_pipeline": "merge_descriptive_fields"
+    },
+    "mappings": {
+      "properties": {
+        "merged_descriptives": {
+          "type": "semantic_text",
+          "inference_id": "elser-m2-embedding",
+          "fields": {
+            "text": {
+              "type": "text"
+            }
+          }
+        }
+      }
+    },
+    "aliases": {}
+  }
+}
+
+// reindex uploaded quria data into a new index matching the naming pattern of the above index template (note the wildcard)
+
+POST _reindex?wait_for_completion=false
+{
+  "source": {
+    "index": "quria_full_dataset"
+  },
+  "dest": {
+    "index": "quria-fields-subset-full004"
+  }
+}
+
+
+///// SEARCHES //////
+
+GET quria-fields-subset-full002/_search
+{
+  "size": 1
+}
+
+
+GET quria-fields-subset-full003/_search
+{
+  "query": {
+    "semantic": {
+      "field": "merged_descriptives",
+      "query": "knitting for kids"
+    }
+  },
+  "size": 3
+}
+
+
+
+GET quria-fields-subset-full003/_search
+{
+  "size": 3,
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "semantic": {
+            "field": "merged_descriptives",
+            "query": "Brunner"
+          }
+        },
+        {
+          "multi_match": {
+            "query": "Brunner",
+            "fields": [
+              "title",
+              "expression_title",
+              "subjects",
+              "genres",
+              "creator_name",
+              "statement_of_responsibility",
+              "literary_form",
+              "isbns"
+            ],
+            "fuzziness": "AUTO"
+          }
+        }
+      ]
+    }
+  }
+}
+
+
+
+
+
+
+
+
+/////////////////
+
+GET quria-fields-subset-full004/_search
+{
+  "size": 3,
+  "query": {
+    "match": {
+      "creator_name": "Brunner"
+    }
+  }
+}
+
+GET quria-fields-subset-full004/_search
+{
+  "size": 3,
+  "query": {
+    "sparse_vector": {
+      "field": "merged_descriptives",
+      "query": "gluten free recipes",
+      "inference_id": ".elser_model_2_linux-x86_64"
+    }
+  }
+}
+
+
+GET quria-fields-subset-full004/_search
+{
+  "size": 3,
+  "query": {
+    "multi_match": {
+      "query": "Brunner",
+      "fields": [
+        "title^3",
+        "creator_name^2"
+      ],
+      "fuzziness": "AUTO"
+    }
+  }
+}
+
+GET quria-fields-subset-full004/_search
+{
+  "size": 3,
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "sparse_vector": {
+            "field": "merged_descriptives",
+            "query": "Brunner",
+            "inference_id": ".elser_model_2_linux-x86_64"
+          }
+        },
+        {
+          "multi_match": {
+            "query": "Brunner",
+            "fields": [
+              "title^3",
+              "creator_name^2"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
+
+//this is the query that is generated in the function on openAI Assistant. It may still be missing some fields in the multimatch and additional filters, like language. no weighting of fields yet (eg. ^3)
+GET quria-fields-subset-full003/_search
+{
+  "size": 5,
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "sparse_vector": {
+            "field": "merged_descriptives",
+            "inference_id": ".elser_model_2_linux-x86_64",
+            "query": "craft brewing"
+          }
+        },
+        {
+          "multi_match": {
+            "query": "beer",
+            "fields": [
+              "title",
+              "expression_title",
+              "subjects",
+              "genres",
+              "creator_name",
+              "statement_of_responsibility",
+              "literary_form",
+              "isbns"
+            ]
+          }
+        }
+      ],
+      "filter": [
+        {
+          "term": {
+            "manifestation_type.keyword": "book"
+          }
+        }
+      ]
+    }
+  }
+}
+
+
+//////////// NILS EXPERIMENTING ⬇️
+
+GET quria-fields-subset-full004/_search
+{
+  
+  "size": 5,
+  "query": {
+    "bool": {
+      "should": [
+        {
+          "sparse_vector": {
+            "field": "merged_descriptives",
+            "inference_id": ".elser_model_2_linux-x86_64",
+            "query": "scandinavian crafts"
+          }
+        },
+        {
+          "multi_match": {
+            "query": "",
+            "fields": [
+              "title",
+              "expression_title"
+            ]
+          }
+        },
+        {
+          "multi_match": {
+            "query": "",
+            "fields": [
+              "creator_name",
+              "statement_of_responsibility"
+            ]
+          }
+        }
+      ],
+      "filter": [
+        {
+          "term": {
+            "manifestation_type.keyword": "book"
+          }
+        }
+      ]
+    }
+  }
+}
+
+////////////////// current lense. query from Stefan
+
+GET quria-fields-subset-full004/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "sparse_vector": {
+            "field": "merged_descriptives",
+            "inference_id": ".elser_model_2_linux-x86_64",
+            "query": "pippi"
+          }
+        }
+      ],
+      "should": [
+        {
+          "multi_match": {
+            "query": "book",
+            "fields": ["manifestation_type"],
+            "fuzziness": "AUTO",
+            "prefix_length": 1,
+            "fuzzy_transpositions": true
+          }
+        },
+        {
+          "match": {
+            "target_audience": "Juvenile"
+          }
+        },
+        {
+          "match": {
+            "language": "sv"
+          }
+        }
+      ],
+      "minimum_should_match": 0
+    }
+  }
+}
+
+
+/////////////////work on authors bio 
+
+PUT authors
+{
+  "mappings": {
+    "properties": {
+      "author_id":   { "type": "keyword" },
+      "name":        { "type": "text", "fields": { "keyword": { "type": "keyword" }}},
+      "birth":       { "type": "integer" },
+      "variants":    { "type": "text" },
+      "top_subjects":{ "type": "keyword" },
+      "bio_text":    { "type": "text" },
+      "profile_sparse": {
+        "type": "semantic_text",
+        "inference_id": "elser-m2-embedding",
+        "model_settings": {
+          "service": "elasticsearch",
+          "task_type": "sparse_embedding"
+        }
+      },
+      "source": {
+        "properties": {
+          "openlibrary_id":  { "type": "keyword" },
+          "openlibrary_url": { "type": "keyword" },
+          "match_confidence":{ "type": "float" },
+          "last_fetched":    { "type": "date" }
+        }
+      }
+    }
+  }
+}
+
+PUT authors/_mapping
+{
+  "properties": {
+    "subjects_text": {
+      "type": "semantic_text",
+      "inference_id": "elser-m2-embedding",
+      "model_settings": { "service": "elasticsearch", "task_type": "sparse_embedding" }
+    }
+  }
+}
+
+
+
+///// additional ingest pipeline - (only run once to set up pipeline) 
+PUT _ingest/pipeline/author_profile_elser
+{
+  "processors": [
+    {
+      "inference": {
+        "model_id": "elser-m2-embedding",
+        "input_output": [
+          { "input_field": "bio_text", "output_field": "profile_sparse" }
+        ]
+      }
+    }
+  ]
+}
+
+PUT _ingest/pipeline/author_profile_elser
+{
+  "processors": [
+    { "set": { "field": "profile_sparse", "copy_from": "bio_text" } }
+  ]
+}
+
+
+// test the pipeline
+POST _ingest/pipeline/author_profile_elser/_simulate
+{
+  "docs": [
+    { "_source": { "bio_text": "Jane Austen was an English novelist known for..." } }
+  ]
+}
+
+
+/////// how many unique authors in the index? 
+POST quria-fields-subset-full004/_search
+{
+  "size": 0,
+  "aggs": { "unique_creators": { "cardinality": { "field": "creator_name.keyword" } } }
+}
+
+/// number of authors w/ bio after processing
+GET authors/_count
+
+// 5 samples
+GET authors/_search
+{
+  "size": 5,
+  "_source": ["author_id","name","top_subjects", "bio_text"]
+}
+
+// ID search example
+GET authors/_doc/OL21594A
+
+// semantic query example
+GET authors/_search
+{
+  "size": 3,
+  "_source": ["author_id", "name", "top_subjects", "bio_text"],
+  "query": {
+    "sparse_vector": {
+      "field": "profile_sparse",
+      "inference_id": "elser-m2-embedding", 
+      "query": "authors like Jasmine berge"
+    }
+  }
+}
+
+GET authors/_search
+{
+  "size": 3,
+  "query": {
+    "multi_match": {
+      "query": "hoff",
+      "fields": [
+        "bio_text",
+        "name^2"
+      ],
+      "fuzziness": "AUTO"
+    }
+  }
+}
+
+/// fix the bio field if it only contains the name and run embeddings over subjects
+POST authors/_update_by_query?slices=auto&wait_for_completion=false&conflicts=proceed&refresh=true
+{
+  "script": {
+    "lang": "painless",
+    "source": """
+      def subs = (ctx._source.top_subjects != null) ? ctx._source.top_subjects : [];
+      String subjText;
+      if (subs.size() == 0) {
+        subjText = "";
+      } else {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < subs.size(); i++) {
+          if (i > 0) sb.append(", ");
+          sb.append(subs.get(i));
+        }
+        subjText = sb.toString();
+      }
+      ctx._source.subjects_text = subjText;
+
+      def name = ctx._source.name != null ? ctx._source.name.trim() : "";
+      def bio  = ctx._source.bio_text != null ? ctx._source.bio_text.trim() : "";
+
+      // If bio empty or literally just the name, replace WITHOUT the name
+      if (bio.length() == 0 || bio.equalsIgnoreCase(name)) {
+        bio = "Author known for themes and subjects: " + subjText + ".";
+        ctx._source.bio_text = bio;
+      }
+
+      // Keep bio-based semantic field separate (subjects_text is its own semantic field)
+      ctx._source.profile_sparse = ctx._source.bio_text;
+    """
+  }
+}
+
+//// authors multi query
+
+GET authors/_search
+{
+  "size": 3,
+  "_source": ["author_id","name","top_subjects","bio_text"],
+  "query": {
+    "bool": {
+      "should": [
+        { "sparse_vector": {
+            "field": "profile_sparse",
+            "inference_id": "elser-m2-embedding",
+            "query": "authors like Isaac Asimov"
+        }},
+        { "sparse_vector": {
+            "field": "subjects_text",
+            "inference_id": "elser-m2-embedding",
+            "query": "science fiction, robotics, space exploration, future technology"
+        }}
+      ],
+      "minimum_should_match": 1
+    }
+  }
+}
+
+
+GET authors/_search
+{
+  "size": 3,
+  "_source": ["author_id","name","top_subjects","bio_text"],
+  "query": {
+    "bool": {
+      "should": [
+        {
+          "sparse_vector": {
+            "field": "profile_sparse",
+            "inference_id": "elser-m2-embedding",
+            "query": "authors like Isaac Asimov",
+            "boost": 1.0
+          }
+        },
+        {
+          "sparse_vector": {
+            "field": "subjects_text",
+            "inference_id": "elser-m2-embedding",
+            "query": "authors like Isaac Asimov",
+            "boost": 1.3
+          }
+        }
+      ],
+      "minimum_should_match": 1
+    }
+  }
+}
